@@ -1,61 +1,33 @@
 from functools import lru_cache
 from pathlib import Path
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
-    app_env: str = "development"
-    app_host: str = "0.0.0.0"
-    app_port: int = 8000
-    log_level: str = "INFO"
-    api_keys: list[str] = Field(default_factory=lambda: ["change-me"])
-    max_upload_size: int = 50 * 1024 * 1024
-    max_pages: int = 100
-    max_image_pixels: int = 50_000_000
-    temp_dir: Path = Path("/tmp/ocr")
-    result_dir: Path = Path("/tmp/ocr-results")
-    result_ttl_seconds: int = 86400
-    temp_file_ttl_seconds: int = 3600
-    vision_backend: str = "ollama"
-    default_model_profile: str = "default"
-    profile_dir: Path = Path("config/model_profiles")
-    ollama_base_url: str = "http://ollama:11434"
-    ollama_model: str = "document-ocr"
-    ollama_keep_alive: int = -1
-    ollama_request_timeout: float = 600
-    ollama_connect_timeout: float = 10
-    ollama_max_retries: int = 2
-    ollama_num_ctx: int = 32768
-    ollama_num_predict: int = 12000
-    ollama_temperature: float = 0
-    ollama_seed: int = 42
-    ollama_max_concurrent_requests: int = 1
-    llama_cpp_base_url: str = "http://llama-server:8080"
-    llama_cpp_model: str = "document-ocr"
-    redis_url: str = "redis://redis:6379/0"
-    max_active_documents: int = 2
-    max_parallel_pages: int = 1
-    max_queue_size: int = 64
-    queue_wait_timeout: int = 30
-    page_processing_timeout: int = 600
-    document_processing_timeout: int = 7200
-    max_vision_retries: int = 2
-    pdf_render_dpi: int = 300
-    preprocess_mode: str = "auto"
-    min_free_storage_bytes: int = 536870912
-    rate_limit_per_minute: int = 30
-
-    @field_validator("api_keys", mode="before")
-    @classmethod
-    def split_keys(cls, value):
-        return [x.strip() for x in value.split(",") if x.strip()] if isinstance(value, str) else value
-
-    @field_validator("vision_backend")
-    @classmethod
-    def backend(cls, value):
-        if value not in {"ollama", "llama_cpp"}: raise ValueError("VISION_BACKEND must be ollama or llama_cpp")
-        return value
-
+ model_config=SettingsConfigDict(env_file=".env",extra="ignore")
+ app_env:str="development";app_host:str="0.0.0.0";app_port:int=Field(8000,ge=1,le=65535);log_level:str="INFO"
+ api_keys:list[str]=Field(default_factory=lambda:["change-me"]);max_upload_size:int=Field(50*1024*1024,ge=1024,le=2_147_483_648);max_pages:int=Field(100,ge=1,le=10000);max_image_pixels:int=Field(50_000_000,ge=1_000_000)
+ temp_dir:Path=Path("/tmp/ocr");result_dir:Path=Path("/tmp/ocr-results");result_ttl_seconds:int=Field(86400,ge=60);temp_file_ttl_seconds:int=Field(3600,ge=60)
+ vision_backend:str="ollama";default_model_profile:str=Field("default",min_length=1,max_length=64);profile_dir:Path=Path("config/model_profiles")
+ ollama_base_url:str="http://ollama:11434";ollama_model:str="document-ocr";ollama_keep_alive:int=-1;ollama_request_timeout:float=Field(600,gt=0);ollama_connect_timeout:float=Field(10,gt=0);ollama_max_retries:int=Field(2,ge=0,le=10);ollama_num_ctx:int=Field(32768,ge=1024);ollama_num_predict:int=Field(12000,ge=128);ollama_temperature:float=Field(0,ge=0,le=2);ollama_seed:int=42;ollama_max_concurrent_requests:int=Field(1,ge=1,le=16)
+ llama_cpp_base_url:str="http://llama-server:8080";llama_cpp_model:str="document-ocr";redis_url:str="redis://redis:6379/0"
+ max_active_documents:int=Field(2,ge=1,le=64);max_parallel_pages:int=Field(1,ge=1,le=16);max_queue_size:int=Field(64,ge=1);queue_wait_timeout:int=Field(30,ge=1);page_processing_timeout:int=Field(600,ge=1);document_processing_timeout:int=Field(7200,ge=1);max_vision_retries:int=Field(2,ge=0,le=10)
+ pdf_render_dpi:int=Field(300,ge=150,le=450);preprocess_mode:str="auto";min_free_storage_bytes:int=Field(536870912,ge=0);rate_limit_per_minute:int=Field(30,ge=1);worker_heartbeat_ttl:int=Field(45,ge=10);readiness_cache_ttl:int=Field(30,ge=5)
+ @field_validator("api_keys",mode="before")
+ @classmethod
+ def split_keys(cls,v):return [x.strip() for x in v.split(",") if x.strip()] if isinstance(v,str) else v
+ @field_validator("vision_backend")
+ @classmethod
+ def backend(cls,v):
+  if v not in {"ollama","llama_cpp"}:raise ValueError("VISION_BACKEND must be ollama or llama_cpp")
+  return v
+ @field_validator("preprocess_mode")
+ @classmethod
+ def mode(cls,v):
+  if v not in {"none","safe","enhanced","auto"}:raise ValueError("invalid PREPROCESS_MODE")
+  return v
+ @model_validator(mode="after")
+ def production_secrets(self):
+  if self.app_env=="production" and (not self.api_keys or "change-me" in self.api_keys):raise ValueError("Production API_KEYS must not contain change-me")
+  return self
 @lru_cache
-def get_settings() -> Settings: return Settings()
+def get_settings():return Settings()

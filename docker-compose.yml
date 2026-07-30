@@ -9,6 +9,7 @@ services:
     tmpfs: [/tmp]
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
+    volumes: [ocr_data:/data]
   worker:
     build: .
     command: ["dramatiq", "app.workers.tasks", "--processes", "1", "--threads", "1"]
@@ -18,11 +19,21 @@ services:
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
+    volumes: [ocr_data:/data]
   redis:
     image: redis:7.4.2-alpine
     command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction"]
     networks: [internal]
     volumes: [redis_data:/data]
+  model-init:
+    image: ollama/ollama:0.6.2
+    profiles: [model-init]
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["ollama serve & pid=$$!; sleep 3; ollama pull $${BASE_VISION_MODEL:-qwen2.5vl:7b}; ollama create document-ocr -f /config/Modelfile; kill $$pid"]
+    environment:
+      OLLAMA_HOST: 127.0.0.1:11434
+    volumes: [ollama_models:/root/.ollama, ./ollama:/config:ro]
+    networks: [model_setup]
   ollama:
     image: ollama/ollama:0.6.2
     environment:
@@ -42,6 +53,8 @@ networks:
   public: {}
   internal:
     internal: true
+  model_setup: {}
 volumes:
   redis_data: {}
   ollama_models: {}
+  ocr_data: {}
