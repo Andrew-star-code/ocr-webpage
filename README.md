@@ -89,3 +89,17 @@ A worker-only cleanup loop uses a distributed Redis lock. It skips identifiers b
 JSON repair is separate from repeat recognition: invalid raw output and validation diagnostics are sent locally without the page image using a reduced token limit. The repair prompt forbids text/block changes; extracted text values are compared before acceptance. Changed text or an invalid repaired schema causes rejection and a full recognition retry. Raw model responses are never logged.
 
 Repository policy recommendation: protect `main`, require the Python, Compose validation and Docker build jobs from `.github/workflows/ci.yml`, and prohibit merging until all required checks are green.
+
+## Packaging and crash recovery
+
+Setuptools package discovery is explicitly restricted to `app` and `app.*`; operational
+`config`, `ollama`, `models`, and tests are not Python packages and are excluded from wheels.
+The production container builds a wheel only after copying the real `app` package, installs it
+without test extras, then copies runtime model profiles separately. CI inspects the wheel and
+smoke-imports the built image.
+
+Redis locks use token-checked Lua for acquire/extend/release. A worker renews its job lock while
+processing and stops new inference if ownership is lost. Queue reconciliation releases missing,
+terminal, and stale unlocked reservations while preserving live locked work. Failed and cancelled
+job metadata is retained exclusively by `JOB_METADATA_TTL_SECONDS`; file cleanup never deletes
+terminal metadata merely because its input or result file is absent.

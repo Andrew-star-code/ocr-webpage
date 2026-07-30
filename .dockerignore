@@ -5,3 +5,10 @@ __pycache__
 *.pyc
 models/*
 !models/README.md
+dist
+build
+*.egg-info
+.coverage
+htmlcov
+/data
+/results

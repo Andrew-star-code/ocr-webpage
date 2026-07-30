@@ -1,5 +1,7 @@
 name: ci
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
 permissions:
   contents: read
 jobs:
@@ -16,10 +18,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: {python-version: "3.12", cache: pip}
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
       - run: pip install -e '.[test]'
+      - run: python -m build
+      - name: Validate wheel contents
+        run: |
+          python - <<'PY'
+          import glob, zipfile
+          wheel = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(wheel).namelist()
+          forbidden = ("tests/", "models/", "config/", "ollama/", ".env", "data/")
+          assert any(name.startswith("app/") for name in names), names
+          assert not any(name.startswith(forbidden) for name in names), names
+          PY
       - run: python -m compileall -q app
-      - run: pytest -m "not vlm_integration"
+      - run: pytest -W error::RuntimeWarning -m "not vlm_integration"
       - run: ruff check app tests
   compose:
     runs-on: ubuntu-latest
@@ -38,7 +54,9 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
+          load: true
           push: false
-          tags: local-vision-ocr:ci
+          tags: local-vision-ocr:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - run: docker run --rm local-vision-ocr:test python -c "import app; import app.main"

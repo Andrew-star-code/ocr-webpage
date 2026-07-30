@@ -1,4 +1,5 @@
 from prometheus_client import Counter, Gauge, Histogram
+
 REQUESTS = Counter("ocr_requests_total", "API requests", ["endpoint", "status"])
 DOCUMENTS = Counter("ocr_documents_total", "Documents")
 PAGES = Counter("ocr_pages_total", "Vision processed pages")
@@ -21,3 +22,4 @@ PROMPT_TOKENS = Counter("ocr_prompt_tokens_total", "Prompt tokens")
 COMPLETION_TOKENS = Counter("ocr_completion_tokens_total", "Completion tokens")
 CLEANUP_FILES = Counter("ocr_cleanup_files_total", "Expired OCR files removed", ["kind"])
 CLEANUP_ERRORS = Counter("ocr_cleanup_errors_total", "Storage cleanup errors")
+RATE_LIMIT_ERRORS = Counter("ocr_rate_limit_errors_total", "Redis rate limiter errors")
