@@ -1,0 +1,44 @@
+name: ci
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7.4.2-alpine
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      REDIS_TEST_URL: redis://localhost:6379/15
+      REDIS_URL: redis://localhost:6379/0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -e '.[test]'
+      - run: python -m compileall -q app
+      - run: pytest -m "not vlm_integration"
+      - run: ruff check app tests
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cp .env.example .env
+      - run: docker compose config
+      - run: docker compose -f docker-compose.yml -f docker-compose.cpu.yml config
+      - run: docker compose -f docker-compose.yml -f docker-compose.gpu.yml config
+      - run: docker compose --profile model-init config
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: local-vision-ocr:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

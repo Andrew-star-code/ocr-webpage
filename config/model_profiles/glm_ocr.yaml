@@ -1,0 +1,18 @@
+name: glm_ocr
+backend: ollama
+model: document-ocr
+system_prompt: "Переписывай только видимое дословно. Не исправляй данные. Возвращай только JSON."
+user_prompt: "Распознай страницу {page}. Язык {language}. Таблицы {tables}. Режим {mode}. Сохрани структуру, порядок чтения и normalized bbox."
+recommended_resolution: 2480
+max_image_size: 10000000
+tiling_strategy: full_page_plus_tiles
+tile_size: 1600
+tile_overlap: 160
+num_ctx: 32768
+num_predict: 12000
+supports_json_schema: true
+coordinate_format: normalized
+supports_tables: true
+retry_mode: repair_json
+response_cleanup: safe_wrappers
+two_stage: false
