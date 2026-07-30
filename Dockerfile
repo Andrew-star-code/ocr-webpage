@@ -13,8 +13,8 @@ RUN apt-get update \
     && useradd --system --uid 10001 --create-home ocr \
     && mkdir -p /data/input /data/results /app/config/model_profiles \
     && chown -R ocr:ocr /data /app
-COPY --from=builder /wheels/*.whl /tmp/package.whl
-RUN python -m pip install --no-cache-dir /tmp/package.whl && rm /tmp/package.whl
+COPY --from=builder /wheels/*.whl /tmp/
+RUN python -m pip install --no-cache-dir /tmp/*.whl && rm /tmp/*.whl
 WORKDIR /app
 COPY --chown=ocr:ocr config ./config
 COPY --chown=ocr:ocr ollama ./ollama
