@@ -1,0 +1,45 @@
+import io,math
+from dataclasses import dataclass
+from difflib import SequenceMatcher
+from PIL import Image
+from app.schemas.recognition import BoundingBox,PageRecognition
+@dataclass(slots=True)
+class Tile:
+    id:str;image:bytes;x:int;y:int;width:int;height:int;page_width:int;page_height:int
+
+def make_tiles(data,size=1600,overlap=160):
+    image=Image.open(io.BytesIO(data));result=[];step=max(1,size-overlap)
+    for y in range(0,image.height,step):
+        for x in range(0,image.width,step):
+            x2=min(x+size,image.width);y2=min(y+size,image.height);out=io.BytesIO();image.crop((x,y,x2,y2)).save(out,"PNG")
+            result.append(Tile(f"tile-{len(result)+1}",out.getvalue(),x,y,x2-x,y2-y,image.width,image.height))
+            if x2==image.width:break
+        if y2==image.height:break
+    return result
+
+def transform_bbox(box,tile):
+    if box is None:return None
+    return BoundingBox(x1=(tile.x+box.x1*tile.width)/tile.page_width,y1=(tile.y+box.y1*tile.height)/tile.page_height,x2=(tile.x+box.x2*tile.width)/tile.page_width,y2=(tile.y+box.y2*tile.height)/tile.page_height)
+def transform_page(page,tile):
+    blocks=[block.model_copy(update={"bbox":transform_bbox(block.bbox,tile),"tile_id":tile.id}) for block in page.blocks]
+    return page.model_copy(update={"width":tile.page_width,"height":tile.page_height,"blocks":blocks})
+def _iou(a,b):
+    if not a or not b:return 0
+    area=max(0,min(a.x2,b.x2)-max(a.x1,b.x1))*max(0,min(a.y2,b.y2)-max(a.y1,b.y1))
+    union=(a.x2-a.x1)*(a.y2-a.y1)+(b.x2-b.x1)*(b.y2-b.y1)-area
+    return area/union if union else 0
+def _duplicate(a,b):
+    if a.type!=b.type or not a.bbox or not b.bbox:return False
+    ta=a.original_text.strip();tb=b.original_text.strip()
+    if len(ta)<8 or len(tb)<8:return ta==tb and _iou(a.bbox,b.bbox)>.65
+    return SequenceMatcher(None,ta,tb).ratio()>.92 and _iou(a.bbox,b.bbox)>.35
+def merge_pages(base,partials):
+    blocks=list(base.blocks)
+    for page in partials:
+        for candidate in page.blocks:
+            matches=[b for b in blocks if _duplicate(candidate,b)]
+            if not matches:blocks.append(candidate)
+            elif len(candidate.original_text)>len(matches[0].original_text):blocks[blocks.index(matches[0])]=candidate
+    blocks.sort(key=lambda b:(round(b.bbox.y1,3) if b.bbox else 2,b.bbox.x1 if b.bbox else 0))
+    blocks=[b.model_copy(update={"reading_order":i}) for i,b in enumerate(blocks,1)]
+    return base.model_copy(update={"blocks":blocks})
