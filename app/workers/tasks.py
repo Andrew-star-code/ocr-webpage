@@ -73,26 +73,6 @@ def recognize_job(job_id):
     asyncio.run(run(job_id))
 
 
-async def _publish_result(storage, store, job_id, stored, target, page_count):
-    await storage.tag_job_file(job_id, stored)
-    completed = await store.complete(
-        job_id,
-        target,
-        result_file=stored.identifier,
-        current_page=page_count,
-        total_pages=page_count,
-        progress=100,
-    )
-    if not completed or completed["status"] not in {
-        "completed",
-        "completed_with_warnings",
-    }:
-        await storage.delete_file(stored.identifier)
-        await storage.delete_reference(job_id, stored.identifier)
-        raise ProcessingCancelled()
-    return completed
-
-
 async def run(job_id):
     redis = Redis.from_url(s.redis_url, decode_responses=True)
     store = JobStore(s.redis_url, s.job_metadata_ttl_seconds, redis)
@@ -155,6 +135,7 @@ async def run(job_id):
             options["normalize_text"],
             options["detect_tables"],
             options["dpi"],
+            options["allow_partial_result"],
             progress,
             cancelled,
         )
@@ -176,12 +157,20 @@ async def run(job_id):
         stored = await storage.save_result(job_id, body, exporter.mime_type, exporter.extension)
         created_results.append(stored.identifier)
         await ensure_active()
+        await storage.tag_job_file(job_id, stored)
         target = (
             "completed_with_warnings"
             if result.document.partial or result.document.warnings
             else "completed"
         )
-        await _publish_result(storage, store, job_id, stored, target, len(result.document.pages))
+        await store.complete(
+            job_id,
+            target,
+            result_file=stored.identifier,
+            current_page=len(result.document.pages),
+            total_pages=len(result.document.pages),
+            progress=100,
+        )
         created_results.clear()
     except ProcessingCancelled:
         await store.cancel(job_id)

@@ -28,6 +28,7 @@ async def create_job(
     normalize_text: bool = Form(False),
     include_bounding_boxes: bool = Form(True),
     include_processing_metadata: bool = Form(True),
+    allow_partial_result: bool = Form(False),
     dpi: int = Form(300, ge=150, le=450),
 ):
     exporter = request.app.state.exporters.get(output_format)
@@ -60,6 +61,7 @@ async def create_job(
             "normalize_text": normalize_text,
             "include_bounding_boxes": include_bounding_boxes,
             "include_processing_metadata": include_processing_metadata,
+            "allow_partial_result": allow_partial_result,
             "dpi": dpi,
         }
         value = await store.create(job_id, options, stored.identifier)

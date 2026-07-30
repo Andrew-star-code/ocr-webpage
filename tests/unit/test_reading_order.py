@@ -29,12 +29,7 @@ def page(blocks):
         page_number=1,
         width=1000,
         height=1000,
-        blocks=[
-            block.model_copy(
-                update={"source_id": block.id, "id": f"input-{index}", "reading_order": index}
-            )
-            for index, block in enumerate(blocks, 1)
-        ],
+        blocks=[b.model_copy(update={"reading_order": i}) for i, b in enumerate(blocks, 1)],
     )
 
 

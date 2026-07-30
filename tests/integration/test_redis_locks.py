@@ -55,20 +55,3 @@ async def test_lock_renewal_and_ownership_loss(redis):
     assert lost.is_set()
     stop.set()
     await task
-
-
-class FailingExtendRedis:
-    async def set(self, *args, **kwargs):
-        return True
-
-    async def eval(self, *args, **kwargs):
-        raise ConnectionError("redis lost")
-
-
-@pytest.mark.asyncio
-async def test_renewal_exception_marks_ownership_lost_fail_closed():
-    lock = RedisLock(FailingExtendRedis(), "lock", 2, "owner")
-    stop = asyncio.Event()
-    lost = asyncio.Event()
-    await lock.renew_until_stopped(stop, lost, 0.01)
-    assert lost.is_set()

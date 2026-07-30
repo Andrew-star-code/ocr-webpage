@@ -327,6 +327,7 @@ class RecognitionPipeline:
         normalize=False,
         detect_tables=True,
         dpi=300,
+        allow_partial=False,
         progress=None,
         cancel=None,
     ):

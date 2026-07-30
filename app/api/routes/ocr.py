@@ -25,6 +25,7 @@ async def ocr(
     normalize_text: bool = Form(False),
     include_bounding_boxes: bool = Form(True),
     include_processing_metadata: bool = Form(True),
+    allow_partial_result: bool = Form(False),
     dpi: int = Form(300, ge=150, le=450),
 ):
     exporter = request.app.state.exporters.get(output_format)
@@ -45,6 +46,7 @@ async def ocr(
         normalize_text,
         detect_tables,
         dpi,
+        allow_partial_result,
     )
     body = exporter.export(
         result, ExportOptions(preserve_layout, include_bounding_boxes, include_processing_metadata)

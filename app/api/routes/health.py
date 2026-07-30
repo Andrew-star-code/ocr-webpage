@@ -79,20 +79,18 @@ async def ready(request: Request):
     checks["vision_backend"] = health.healthy
     try:
         info = await backend.get_model_info(profile.model)
-        checks["model_present"] = info.present
+        checks["model_present"] = True
+        checks["vision_capable"] = info.vision_capable
+        checks["structured_output"] = info.structured_output
     except Exception:
-        info = None
-        checks["model_present"] = False
+        checks.update(model_present=False, vision_capable=False, structured_output=False)
     checks["test_inference"] = (
         await _inference_check(request, profile)
-        if checks["vision_backend"] and checks["model_present"]
+        if all(
+            checks.get(k)
+            for k in ("vision_backend", "model_present", "vision_capable", "structured_output")
+        )
         else False
-    )
-    if checks["test_inference"]:
-        info = await backend.get_model_info(profile.model)
-    checks["vision_capable"] = bool(info and (info.vision_capable or checks["test_inference"]))
-    checks["structured_output"] = bool(
-        info and (info.structured_output or checks["test_inference"])
     )
     ready = all(checks.values())
     return Response(

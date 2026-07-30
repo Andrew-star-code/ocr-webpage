@@ -38,11 +38,6 @@ class RedisLock:
             try:
                 await asyncio.wait_for(stop.wait(), timeout=interval)
             except TimeoutError:
-                try:
-                    extended = await self.extend()
-                except Exception:
-                    ownership_lost.set()
-                    return
-                if not extended:
+                if not await self.extend():
                     ownership_lost.set()
                     return

@@ -40,7 +40,7 @@ def test_create_status_cancel_delete(monkeypatch, redis):
     monkeypatch.setattr(tasks.recognize_job, "send", lambda job_id: None)
     with TestClient(app) as client:
         app.state.rate_limiter = Allow()
-        headers = {"X-API-Key": "test-suite-key"}
+        headers = {"X-API-Key": "change-me"}
         created = client.post("/v1/jobs", headers=headers, files=upload()).json()
         job = created["job_id"]
         assert created["status"] == "queued" and created["version"] == 1
@@ -58,7 +58,7 @@ def test_atomic_queue_full_and_dispatch_cleanup(monkeypatch, redis):
     redis.zadd("ocr:queue:jobs", {f"full-{i}": i for i in range(settings.max_queue_size)})
     with TestClient(app) as client:
         app.state.rate_limiter = Allow()
-        headers = {"X-API-Key": "test-suite-key"}
+        headers = {"X-API-Key": "change-me"}
         assert client.post("/v1/jobs", headers=headers, files=upload()).status_code == 429
     redis.flushdb()
     monkeypatch.setattr(
@@ -67,7 +67,7 @@ def test_atomic_queue_full_and_dispatch_cleanup(monkeypatch, redis):
     with TestClient(app) as client:
         app.state.rate_limiter = Allow()
         before = set(Path(get_settings().temp_dir).glob("input-*"))
-        response = client.post("/v1/jobs", headers={"X-API-Key": "test-suite-key"}, files=upload())
+        response = client.post("/v1/jobs", headers={"X-API-Key": "change-me"}, files=upload())
         after = set(Path(get_settings().temp_dir).glob("input-*"))
         assert (
             response.status_code == 503 and before == after and redis.zcard("ocr:queue:jobs") == 0

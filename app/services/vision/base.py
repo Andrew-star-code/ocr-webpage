@@ -32,7 +32,6 @@ class ModelInfo:
     name: str
     vision_capable: bool
     structured_output: bool
-    present: bool = True
 
 
 class VisionBackend(Protocol):
