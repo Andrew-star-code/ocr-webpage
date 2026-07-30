@@ -1,0 +1,47 @@
+services:
+  api:
+    build: .
+    env_file: .env
+    ports: ["8000:8000"]
+    networks: [public, internal]
+    depends_on: [redis, ollama]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  worker:
+    build: .
+    command: ["dramatiq", "app.workers.tasks", "--processes", "1", "--threads", "1"]
+    env_file: .env
+    networks: [internal]
+    depends_on: [redis, ollama]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+  redis:
+    image: redis:7.4.2-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction"]
+    networks: [internal]
+    volumes: [redis_data:/data]
+  ollama:
+    image: ollama/ollama:0.6.2
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_KEEP_ALIVE: "-1"
+      OLLAMA_NUM_PARALLEL: "1"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_MAX_QUEUE: "64"
+    networks: [internal]
+    volumes: [ollama_models:/root/.ollama]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+networks:
+  public: {}
+  internal:
+    internal: true
+volumes:
+  redis_data: {}
+  ollama_models: {}
