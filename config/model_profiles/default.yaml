@@ -1,0 +1,16 @@
+name: default
+backend: ollama
+model: document-ocr
+system_prompt: strict_visual_transcription
+user_prompt: structured_document
+recommended_resolution: 2480
+max_image_size: 10000000
+tiling_strategy: full_page_plus_tiles
+num_ctx: 32768
+num_predict: 12000
+supports_json_schema: true
+coordinate_format: normalized
+supports_tables: true
+retry_mode: repair_json
+response_cleanup: safe_wrappers
+two_stage: false
