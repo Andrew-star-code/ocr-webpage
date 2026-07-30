@@ -13,8 +13,7 @@ class MarkdownExporter:
     elif isinstance(b,ListBlock):out.extend("  "*item.level+(f"{i+1}. " if b.ordered else "- ")+item.text for i,item in enumerate(b.items))
     elif isinstance(b,TableBlock):
      merged=any(c.row_span>1 or c.column_span>1 for row in b.rows for c in row.cells)
-     if merged:
-      fake=result.__class__(result.document.model_copy(update={"pages":[page.model_copy(update={"blocks":[b]})]}),result.page_images,result.rendered_pages);out.append(HtmlExporter().export(fake,options).decode())
+     if merged:out.append(HtmlExporter().export_table_fragment(b))
      else:
       width=max((len(r.cells) for r in b.rows),default=0);rows=[[esc(c.text) for c in r.cells]+[""]*(width-len(r.cells)) for r in b.rows]
       if rows and width:out.extend(["| "+" | ".join(rows[0])+" |","| "+" | ".join("---" for _ in range(width))+" |"]+["| "+" | ".join(r)+" |" for r in rows[1:]])

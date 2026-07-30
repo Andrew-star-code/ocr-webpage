@@ -77,3 +77,15 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml config
 ```
 
 Настоящий тест выполняет запрос с программно созданным изображением только при `RUN_VLM_INTEGRATION=1`. Для диагностики используйте `/ready`, `/metrics`, request ID и безопасные JSON logs.
+
+## Concurrency, cleanup and merge guarantees
+
+Job updates use versioned Redis Lua compare-and-set operations and an explicit state machine. Terminal states cannot transition, stale progress cannot overwrite cancellation, and a per-job worker lock makes repeated Dramatiq delivery idempotent. Queue capacity is a Redis sorted set of unique job IDs reserved atomically by Lua; dispatch failures release capacity and remove input/job artifacts. A reconciliation operation removes reservations with no job metadata.
+
+Reading order is resolved in `app/services/layout/reading_order.py`. For `full_page_plus_tiles`, detail blocks are matched to the overview by type, bbox overlap, text similarity and geometric proximity while retaining global order. Tile-only pages cluster horizontal intervals into columns, emit spanning headings/tables as vertical separators, read columns left-to-right and top-to-bottom, append footer/page number, then unboxed blocks. Finalization replaces all model IDs with stable `page-N-block-M` IDs and revalidates the complete `PageRecognition` model.
+
+A worker-only cleanup loop uses a distributed Redis lock. It skips identifiers belonging to active jobs and deletes expired inputs/results, abandoned atomic temporary files, orphan references and terminal metadata whose file has expired. Cleanup metrics report removed artifacts and errors without document content. Configure `CLEANUP_INTERVAL_SECONDS` and `CLEANUP_LOCK_TTL_SECONDS`.
+
+JSON repair is separate from repeat recognition: invalid raw output and validation diagnostics are sent locally without the page image using a reduced token limit. The repair prompt forbids text/block changes; extracted text values are compared before acceptance. Changed text or an invalid repaired schema causes rejection and a full recognition retry. Raw model responses are never logged.
+
+Repository policy recommendation: protect `main`, require the Python, Compose validation and Docker build jobs from `.github/workflows/ci.yml`, and prohibit merging until all required checks are green.

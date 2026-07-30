@@ -34,12 +34,7 @@ def _duplicate(a,b):
     if len(ta)<8 or len(tb)<8:return ta==tb and _iou(a.bbox,b.bbox)>.65
     return SequenceMatcher(None,ta,tb).ratio()>.92 and _iou(a.bbox,b.bbox)>.35
 def merge_pages(base,partials):
-    blocks=list(base.blocks)
-    for page in partials:
-        for candidate in page.blocks:
-            matches=[b for b in blocks if _duplicate(candidate,b)]
-            if not matches:blocks.append(candidate)
-            elif len(candidate.original_text)>len(matches[0].original_text):blocks[blocks.index(matches[0])]=candidate
-    blocks.sort(key=lambda b:(round(b.bbox.y1,3) if b.bbox else 2,b.bbox.x1 if b.bbox else 0))
-    blocks=[b.model_copy(update={"reading_order":i}) for i,b in enumerate(blocks,1)]
-    return base.model_copy(update={"blocks":blocks})
+    from app.services.layout.reading_order import finalize_page
+    details=[block for page in partials for block in page.blocks]
+    combined=base.model_copy(update={"blocks":details})
+    return finalize_page(combined,list(base.blocks) if base.blocks else None)

@@ -1,5 +1,5 @@
 import asyncio,io,json,re,time,uuid
-from dataclasses import dataclass
+from dataclasses import dataclass,field
 from typing import Awaitable,Callable
 from PIL import Image
 from pydantic import ValidationError
@@ -9,6 +9,7 @@ from app.schemas.recognition import DocumentRecognition,PageRecognition,Processi
 from app.services.preprocessing.images import preprocess
 from app.services.rendering.pages import RenderedPage,render_pages
 from app.services.tiling.tiles import make_tiles,merge_pages,transform_bbox,transform_page
+from app.services.layout.reading_order import finalize_page
 from app.services.validation.files import validate_document
 from app.services.vision.base import VisionRequestOptions
 
@@ -20,6 +21,13 @@ class RecognitionResult:
     document:DocumentRecognition
     page_images:list[bytes]
     rendered_pages:list[RenderedPage]
+@dataclass(slots=True)
+class InvalidVisionResponse:
+    raw_response:str
+    parse_error:str|None=None
+    validation_errors:list[dict]=field(default_factory=list)
+class ProcessingCancelled(ServiceError):
+    def __init__(self):super().__init__("processing_cancelled","Processing cancelled",409)
 
 def extract_json(text,response_cleanup="safe_wrappers"):
     value=text.strip()
@@ -33,6 +41,7 @@ def extract_json(text,response_cleanup="safe_wrappers"):
             try:
                 obj,end=decoder.raw_decode(value[index:])
                 if value[index+end:].strip():raise ServiceError("invalid_model_response","Model added text outside JSON",502)
+                if not isinstance(obj,dict):raise ServiceError("invalid_model_response","Model response must be a JSON object",502)
                 return obj
             except json.JSONDecodeError:continue
     code="output_truncated" if value.count("{")>value.count("}") else "invalid_model_response"
@@ -40,7 +49,7 @@ def extract_json(text,response_cleanup="safe_wrappers"):
 class RecognitionPipeline:
     def __init__(self,settings,backends,profiles):self.s=settings;self.backends=backends;self.profiles=profiles;self.document_sem=asyncio.Semaphore(settings.max_active_documents)
     async def _cancelled(self,cancel):
-        if cancel and await cancel():raise ServiceError("processing_cancelled","Processing cancelled",409)
+        if cancel and await cancel():raise ProcessingCancelled()
     def _options(self,profile):
         return VisionRequestOptions(profile.model,profile.system_prompt,self.s.ollama_temperature,self.s.ollama_seed,profile.num_ctx,profile.num_predict,profile.supports_json_schema)
     async def _recognize(self,image,page_number,width,height,profile,prompt,cancel):
@@ -54,8 +63,15 @@ class RecognitionPipeline:
                 if profile.two_stage:
                     normalization_prompt="Преобразуй следующий локально распознанный результат в переданную JSON Schema. Не исправляй и не изменяй текст: "+response.content
                     response=await asyncio.wait_for(backend.recognize_page(_BLANK_IMAGE,normalization_prompt,schema,self._options(profile)),self.s.page_processing_timeout)
-                payload=extract_json(response.content,profile.response_cleanup);payload.update(page_number=page_number,width=width,height=height)
-                page=PageRecognition.model_validate(payload)
+                try:
+                    payload=extract_json(response.content,profile.response_cleanup)
+                    if not isinstance(payload,dict):raise ServiceError("invalid_model_response","Model response must be a JSON object",502)
+                    payload.update(page_number=page_number,width=width,height=height);page=PageRecognition.model_validate(payload)
+                except (ServiceError,ValidationError) as invalid:
+                    details=invalid.errors() if isinstance(invalid,ValidationError) else []
+                    broken=InvalidVisionResponse(response.content,str(invalid),details)
+                    if profile.retry_mode=="repair_json":page=await self._repair_json(backend,broken,page_number,width,height,profile,schema,cancel)
+                    else:raise
                 if not page.blocks:raise ServiceError("invalid_model_response","Recognized page is empty",502)
                 return page,attempt
             except ValidationError as exc:last=ServiceError("schema_validation_failed","Model response failed schema validation",502,{"errors":len(exc.errors())})
@@ -65,28 +81,48 @@ class RecognitionPipeline:
             if attempt<self.s.max_vision_retries:
                 VISION_RETRIES.labels(last.code).inc();await asyncio.sleep(min(.5*2**attempt,4))
         raise last or ServiceError("invalid_model_response","Invalid model response",502)
+    async def _repair_json(self,backend,invalid,page_number,width,height,profile,schema,cancel):
+        await self._cancelled(cancel)
+        errors=json.dumps(invalid.validation_errors,ensure_ascii=False,default=str)[:4000] or (invalid.parse_error or "invalid JSON")
+        prompt="Исправь только JSON-синтаксис и структуру. Не добавляй, не удаляй и не изменяй распознанный текст или блоки. Ошибки: "+errors+"\nИсходный ответ:\n"+invalid.raw_response
+        options=self._options(profile);options.num_predict=min(options.num_predict,2048)
+        response=await backend.recognize_page(_BLANK_IMAGE,prompt,schema,options)
+        repaired=extract_json(response.content,profile.response_cleanup)
+        if not isinstance(repaired,dict):raise ServiceError("invalid_model_response","JSON repair returned a non-object",502)
+        original_values=set(re.findall(r'"(?:original_text|text)"\s*:\s*"((?:[^"\\]|\\.)*)"',invalid.raw_response))
+        repaired_values=set(re.findall(r'"(?:original_text|text)"\s*:\s*"((?:[^"\\]|\\.)*)"',response.content))
+        if original_values and not original_values.issubset(repaired_values):raise ServiceError("invalid_model_response","JSON repair changed recognized text",502)
+        repaired.update(page_number=page_number,width=width,height=height)
+        try:return PageRecognition.model_validate(repaired)
+        except ValidationError as exc:raise ServiceError("schema_validation_failed","Repaired JSON failed validation",502,{"errors":len(exc.errors())}) from exc
     def _prompt(self,profile,language,tables,page,mode="page"):
         return profile.user_prompt.format(language=language,tables=str(tables and profile.supports_tables).lower(),page=page,mode=mode)
-    async def _table_crops(self,page,image,profile,cancel):
+    async def _table_crops(self,page,image,profile,language,cancel):
         source=Image.open(io.BytesIO(image));changed=[]
         for block in page.blocks:
             complex_table=isinstance(block,TableBlock) and block.bbox and (block.warnings or (block.bbox.x2-block.bbox.x1)*(block.bbox.y2-block.bbox.y1)>.45)
             if not complex_table:changed.append(block);continue
-            box=block.bbox;pixel=(int(box.x1*source.width),int(box.y1*source.height),int(box.x2*source.width),int(box.y2*source.height));out=io.BytesIO();source.crop(pixel).save(out,"PNG")
-            prompt=self._prompt(profile,"rus+eng",True,page.page_number,"table_only")+" Верни ровно одну таблицу; не создавай невидимые ячейки."
+            await self._cancelled(cancel);box=block.bbox;padding=max(4,int(min(source.size)*.01));pixel=(max(0,int(box.x1*source.width)-padding),max(0,int(box.y1*source.height)-padding),min(source.width,int(box.x2*source.width)+padding),min(source.height,int(box.y2*source.height)+padding))
+            if pixel[2]-pixel[0]<32 or pixel[3]-pixel[1]<32:changed.append(block);continue
+            crop=source.crop(pixel)
+            if crop.width*crop.height>profile.max_image_size:
+                scale=(profile.max_image_size/(crop.width*crop.height))**.5;crop=crop.resize((max(32,int(crop.width*scale)),max(32,int(crop.height*scale))))
+            out=io.BytesIO();crop.save(out,"PNG")
+            prompt=self._prompt(profile,language,True,page.page_number,"table_only")+" Верни ровно одну таблицу; не создавай невидимые ячейки."
             refined,_=await self._recognize(out.getvalue(),page.page_number,pixel[2]-pixel[0],pixel[3]-pixel[1],profile,prompt,cancel)
             tables=[b for b in refined.blocks if isinstance(b,TableBlock)]
             if tables:
                 tile=type("Crop",(),{"x":pixel[0],"y":pixel[1],"width":pixel[2]-pixel[0],"height":pixel[3]-pixel[1],"page_width":source.width,"page_height":source.height})
-                replacement=tables[0].model_copy(update={"id":block.id,"reading_order":block.reading_order,"bbox":transform_bbox(tables[0].bbox,tile) if tables[0].bbox else box})
-                changed.append(replacement)
+                candidate=tables[0];old_score=sum(bool(c.text.strip()) for r in block.rows for c in r.cells);new_score=sum(bool(c.text.strip()) for r in candidate.rows for c in r.cells)
+                replacement=candidate.model_copy(update={"id":block.id,"source_id":candidate.id,"reading_order":block.reading_order,"bbox":transform_bbox(candidate.bbox,tile) if candidate.bbox else box,"warnings":block.warnings+candidate.warnings})
+                changed.append(replacement if new_score>=old_score else block)
             else:changed.append(block)
         return page.model_copy(update={"blocks":changed})
     async def run(self,data,language="rus+eng",profile_name="default",preprocess_mode="auto",normalize=False,detect_tables=True,dpi=300,allow_partial=False,progress=None,cancel=None):
         profile=self.profiles.get(profile_name)
         if profile.backend not in self.backends.backends:raise ServiceError("invalid_request","Profile backend is unavailable",400)
         async with self.document_sem:
-            started=time.monotonic();mime=validate_document(data,self.s);rendered=render_pages(data,mime,dpi);pages=[];retries=0;prep=[];tiles_meta=[];images=[]
+            await self._cancelled(cancel);started=time.monotonic();mime=validate_document(data,self.s);await self._cancelled(cancel);rendered=render_pages(data,mime,dpi);pages=[];retries=0;prep=[];tiles_meta=[];images=[]
             if progress:await progress("rendering",0,len(rendered),0)
             for source in rendered:
                 await self._cancelled(cancel);processed,info=preprocess(source.image,preprocess_mode);prep.append(info);images.append(source.image)
@@ -102,7 +138,8 @@ class RecognitionPipeline:
                         local,count=await self._recognize(tile.image,source.number,tile.width,tile.height,profile,self._prompt(profile,language,detect_tables,source.number,"tile"),cancel)
                         partials.append(transform_page(local,tile));page_retries+=count;tiles_meta.append({"page":source.number,"id":tile.id,"x":tile.x,"y":tile.y,"width":tile.width,"height":tile.height})
                     base=merge_pages(base,partials)
-                if detect_tables and profile.supports_tables:base=await self._table_crops(base,processed,profile,cancel)
+                if detect_tables and profile.supports_tables:base=await self._table_crops(base,processed,profile,language,cancel)
+                base=finalize_page(base)
                 pages.append(base);retries+=page_retries;PAGES.inc()
                 if progress:await progress("recognizing",source.number,len(rendered),retries)
             original="\n\n".join(b.original_text for p in pages for b in sorted(p.blocks,key=lambda x:x.reading_order) if b.original_text);normalized=re.sub(r"[ \t]+"," ",original).replace("-\n","") if normalize else None

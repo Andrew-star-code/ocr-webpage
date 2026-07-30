@@ -22,3 +22,7 @@ def test_searchable_pdf_preserves_image_and_cyrillic_layer():
  data=ExporterRegistry().get("searchable_pdf").export(result(),ExportOptions());pdf=fitz.open(stream=data,filetype="pdf");assert pdf.page_count==1 and pdf[0].get_images() and "Заголовок" in pdf[0].get_text()
 def test_json_flags_remove_bbox_and_metadata():
  data=ExporterRegistry().get("json").export(result(),ExportOptions(include_bounding_boxes=False,include_processing_metadata=False)).decode();assert '"bbox"' not in data and '"metadata"' not in data
+def test_markdown_merged_is_fragment_only():
+ text=ExporterRegistry().get("md").export(result(True),ExportOptions()).decode();assert "<table>" in text and "<html" not in text and "<body" not in text
+def test_docx_nested_list_indents():
+ fixture=result();fixture.document.pages[0].blocks=[ListBlock(id="l",reading_order=1,items=[ListItem(text="a",level=0),ListItem(text="b",level=2)])];data=ExporterRegistry().get("docx").export(fixture,ExportOptions());word=WordDocument(io.BytesIO(data));assert word.paragraphs[1].paragraph_format.left_indent>word.paragraphs[0].paragraph_format.left_indent and word.paragraphs[1].paragraph_format.first_line_indent<0

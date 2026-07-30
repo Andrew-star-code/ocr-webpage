@@ -1,6 +1,7 @@
 import io
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.shared import Inches
 from app.schemas.recognition import HeadingBlock,ListBlock,TableBlock
 _ALIGN={"left":WD_ALIGN_PARAGRAPH.LEFT,"center":WD_ALIGN_PARAGRAPH.CENTER,"right":WD_ALIGN_PARAGRAPH.RIGHT,"justify":WD_ALIGN_PARAGRAPH.JUSTIFY}
 class DocxExporter:
@@ -14,7 +15,10 @@ class DocxExporter:
     if isinstance(b,HeadingBlock) and value:p=word.add_heading(value,level=b.heading_level)
     elif isinstance(b,ListBlock):
      for item in b.items:
-      p=word.add_paragraph(style="List Number" if b.ordered else "List Bullet");p.paragraph_format.left_indent=None;p.add_run(item.text)
+      level=min(max(item.level,0),8);base="List Number" if b.ordered else "List Bullet";style=base if level==0 else f"{base} {level+1}"
+      try:p=word.add_paragraph(style=style)
+      except KeyError:p=word.add_paragraph()
+      p.paragraph_format.left_indent=Inches(.25*(level+1));p.paragraph_format.first_line_indent=Inches(-.18);p.add_run(item.text)
      continue
     elif isinstance(b,TableBlock):
      table=word.add_table(rows=b.row_count,cols=b.column_count);table.style="Table Grid"

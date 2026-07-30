@@ -7,6 +7,7 @@ from app.core.config import get_settings
 from app.core.exceptions import ServiceError
 from app.core.security import require_api_key
 from app.services.jobs.store import JobStore
+from app.services.jobs.capacity import QueueCapacity
 from app.services.validation.files import validate_document
 router=APIRouter(prefix="/v1/jobs",dependencies=[Depends(require_api_key)])
 @router.post("")
@@ -15,16 +16,24 @@ async def create_job(request:Request,file:UploadFile=File(...),output_format:str
  if not exporter:raise ServiceError("invalid_request","Unknown output format",400)
  request.app.state.profiles.get(model_profile)
  if preprocess_mode not in {"none","safe","enhanced","auto"}:raise ServiceError("invalid_request","Invalid preprocess mode",422)
- s=get_settings();redis=Redis.from_url(s.redis_url,decode_responses=True);store=JobStore(s.redis_url,s.result_ttl_seconds,redis)
+ s=get_settings();redis=Redis.from_url(s.redis_url,decode_responses=True);store=JobStore(s.redis_url,s.result_ttl_seconds,redis);capacity=QueueCapacity(redis,s.max_queue_size);job_id=str(uuid.uuid4());stored=None
  try:
-  queued=int(await redis.get("ocr:queue:size") or 0)
-  if queued>=s.max_queue_size:raise ServiceError("queue_is_full","Processing queue is full",429)
-  data=await read_upload(file,s.max_upload_size);mime=validate_document(data,s);job_id=str(uuid.uuid4());stored=await request.app.state.storage.save_input(job_id,data,mime);await request.app.state.storage.tag_job_file(job_id,stored)
+  if not await capacity.reserve(job_id):raise ServiceError("queue_is_full","Processing queue is full",429)
+  data=await read_upload(file,s.max_upload_size);mime=validate_document(data,s);stored=await request.app.state.storage.save_input(job_id,data,mime);await request.app.state.storage.tag_job_file(job_id,stored)
   options={"output_format":output_format,"language":language,"model_profile":model_profile,"preserve_layout":preserve_layout,"detect_tables":detect_tables,"preprocess_mode":preprocess_mode,"normalize_text":normalize_text,"include_bounding_boxes":include_bounding_boxes,"include_processing_metadata":include_processing_metadata,"allow_partial_result":allow_partial_result,"dpi":dpi}
-  value=await store.create(job_id,options,stored.identifier);await redis.incr("ocr:queue:size")
-  from app.workers.tasks import recognize_job
-  recognize_job.send(job_id);return {k:value[k] for k in ("job_id","status","created_at")}
+  value=await store.create(job_id,options,stored.identifier)
+  try:
+   from app.workers.tasks import recognize_job
+   recognize_job.send(job_id)
+  except Exception:
+   await store.delete(job_id);await request.app.state.storage.delete_job_files(job_id);await capacity.release(job_id);raise ServiceError("queue_dispatch_failed","Could not dispatch job",503)
+  return {k:value[k] for k in ("job_id","status","created_at","version")}
+ except Exception:
+  if stored and not await store.get(job_id):await request.app.state.storage.delete_job_files(job_id)
+  await capacity.release(job_id) if not await store.get(job_id) else _noop()
+  raise
  finally:await redis.aclose()
+async def _noop():return None
 @router.get("/{job_id}")
 async def status(job_id:str):
  store=JobStore(get_settings().redis_url,get_settings().result_ttl_seconds)
@@ -48,7 +57,7 @@ async def result(request:Request,job_id:str):
 async def cancel(job_id:str):
  store=JobStore(get_settings().redis_url,get_settings().result_ttl_seconds)
  try:
-  value=await store.update(job_id,status="cancelled",stage="cancelled")
+  value=await store.transition(job_id,"cancelled",stage="cancelled")
   if not value:raise ServiceError("job_not_found","Job not found",404)
   return {"job_id":job_id,"status":"cancelled"}
  finally:await store.close()
@@ -57,5 +66,5 @@ async def delete(request:Request,job_id:str):
  store=JobStore(get_settings().redis_url,get_settings().result_ttl_seconds)
  try:
   if not await store.delete(job_id):raise ServiceError("job_not_found","Job not found",404)
-  await request.app.state.storage.delete_job_files(job_id);return Response(status_code=204)
+  await QueueCapacity(store.redis,get_settings().max_queue_size).release(job_id);await request.app.state.storage.delete_job_files(job_id);return Response(status_code=204)
  finally:await store.close()

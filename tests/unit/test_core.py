@@ -28,3 +28,6 @@ def test_tile_coordinates_and_overlap_aware_merge():
  transformed=transform_page(local,tiles[1]);assert transformed.blocks[0].bbox.x1==pytest.approx(.5)
  far=local.model_copy(update={"blocks":[local.blocks[0].model_copy(update={"id":"b","bbox":BoundingBox(x1=.6,y1=.6,x2=.9,y2=.7)})]})
  assert len(merge_pages(local,[far]).blocks)==2
+def test_duplicate_table_cell_positions_rejected():
+ from app.schemas.recognition import TableBlock,TableCell,TableRow
+ with pytest.raises(ValidationError):TableBlock(id="t",reading_order=1,row_count=1,column_count=1,rows=[TableRow(cells=[TableCell(row_index=0,column_index=0),TableCell(row_index=0,column_index=0)])])

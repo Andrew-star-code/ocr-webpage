@@ -41,11 +41,22 @@ class LocalDocumentStorage:
     async def tag_job_file(self,job_id,stored):
         root=self.temp_dir if stored.identifier.startswith("input-") else self.result_dir
         await self._atomic(root/f"{uuid.uuid4().hex}.{job_id}.ref",stored.identifier.encode())
-    async def cleanup_expired(self):
-        now=time.time();count=0
+    async def exists(self,identifier):return await asyncio.to_thread(self._path(identifier).is_file)
+    async def cleanup_expired(self,active_identifiers=None):
+        active=set(active_identifiers or ());now=time.time();count=0
         for root,ttl in ((self.temp_dir,self.temp_ttl),(self.result_dir,self.result_ttl)):
             for path in root.iterdir():
-                if path.is_file() and now-path.stat().st_mtime>ttl:path.unlink(missing_ok=True);count+=1
+                if not path.is_file():continue
+                age=now-path.stat().st_mtime
+                if path.name in active:continue
+                if path.name.endswith(".ref"):
+                    try:target=path.read_text()
+                    except OSError:target=""
+                    if target in active:continue
+                    if age>ttl or not target or not self._path(target).exists():path.unlink(missing_ok=True);count+=1
+                elif path.name.endswith(".tmp"):
+                    if age>max(60,ttl):path.unlink(missing_ok=True);count+=1
+                elif age>ttl:path.unlink(missing_ok=True);count+=1
         return count
     async def healthcheck(self):
         try:
