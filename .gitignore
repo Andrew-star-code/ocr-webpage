@@ -1,0 +1,14 @@
+.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+/tmp/
+/results/
+models/*
+!models/README.md

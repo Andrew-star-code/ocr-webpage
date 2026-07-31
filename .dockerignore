@@ -1,0 +1,14 @@
+.git
+.env
+__pycache__
+.pytest_cache
+*.pyc
+models/*
+!models/README.md
+dist
+build
+*.egg-info
+.coverage
+htmlcov
+/data
+/results
