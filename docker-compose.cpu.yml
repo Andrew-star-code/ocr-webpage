@@ -1,0 +1,4 @@
+services:
+  ollama:
+    environment:
+      OLLAMA_LLM_LIBRARY: cpu
