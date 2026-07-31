@@ -1,4 +1,3 @@
-import asyncio
 import io
 import json
 import shutil
@@ -23,57 +22,38 @@ async def health():
 
 async def _inference_check(request, profile):
     now = time.monotonic()
-    key = (profile.backend, profile.model)
-    cached = request.app.state.readiness_cache.get(key)
+    cached = request.app.state.readiness_cache
     if cached and now - cached[0] < get_settings().readiness_cache_ttl:
         return cached[1]
     image = Image.new("RGB", (96, 48), "white")
     ImageDraw.Draw(image).text((8, 12), "OCR 7", fill="black")
     stream = io.BytesIO()
     image.save(stream, "PNG")
-    backend = request.app.state.backends.get(profile.backend)
-    base_options = dict(
-        model=profile.model,
-        system_prompt=profile.system_prompt,
-        num_ctx=min(profile.num_ctx, 4096),
-        num_predict=64,
-    )
-    vision = False
-    structured = False
+    schema = {
+        "type": "object",
+        "properties": {"text": {"type": "string"}},
+        "required": ["text"],
+        "additionalProperties": False,
+    }
     try:
-        response = await asyncio.wait_for(
-            backend.recognize_page(
-                stream.getvalue(),
-                "Назови кратко видимый текст.",
-                {},
-                VisionRequestOptions(**base_options, supports_json_schema=False),
+        response = await request.app.state.backends.get(profile.backend).recognize_page(
+            stream.getvalue(),
+            "Верни JSON с полем text, содержащим видимый текст.",
+            schema,
+            VisionRequestOptions(
+                profile.model,
+                profile.system_prompt,
+                num_ctx=min(profile.num_ctx, 4096),
+                num_predict=64,
+                supports_json_schema=True,
             ),
-            timeout=30,
         )
-        vision = bool(response.content.strip())
-        if vision:
-            schema = {
-                "type": "object",
-                "properties": {"text": {"type": "string"}},
-                "required": ["text"],
-                "additionalProperties": False,
-            }
-            response = await asyncio.wait_for(
-                backend.recognize_page(
-                    stream.getvalue(),
-                    "Верни JSON с полем text, содержащим видимый текст.",
-                    schema,
-                    VisionRequestOptions(**base_options, supports_json_schema=True),
-                ),
-                timeout=30,
-            )
-            value = json.loads(response.content)
-            structured = isinstance(value, dict) and bool(value.get("text"))
+        value = json.loads(response.content)
+        ok = bool(value.get("text"))
     except Exception:
-        structured = False
-    result = {"vision": vision, "structured": structured}
-    request.app.state.readiness_cache[key] = (now, result)
-    return result
+        ok = False
+    request.app.state.readiness_cache = (now, ok)
+    return ok
 
 
 @router.get("/ready")
@@ -99,20 +79,19 @@ async def ready(request: Request):
     checks["vision_backend"] = health.healthy
     try:
         info = await backend.get_model_info(profile.model)
-        checks["model_present"] = info.present
+        checks["model_present"] = True
+        checks["vision_capable"] = info.vision_capable
+        checks["structured_output"] = info.structured_output
     except Exception:
-        info = None
-        checks["model_present"] = False
-    probe = (
+        checks.update(model_present=False, vision_capable=False, structured_output=False)
+    checks["test_inference"] = (
         await _inference_check(request, profile)
-        if checks["vision_backend"] and checks["model_present"]
-        else {"vision": False, "structured": False}
+        if all(
+            checks.get(k)
+            for k in ("vision_backend", "model_present", "vision_capable", "structured_output")
+        )
+        else False
     )
-    if probe["vision"]:
-        info = await backend.get_model_info(profile.model)
-    checks["vision_capable"] = bool(info and (info.vision_capable or probe["vision"]))
-    checks["structured_output"] = bool(info and (info.structured_output or probe["structured"]))
-    checks["test_inference"] = probe["vision"] and probe["structured"]
     ready = all(checks.values())
     return Response(
         json.dumps({"ready": ready, "checks": checks}),

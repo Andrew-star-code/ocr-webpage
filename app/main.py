@@ -28,7 +28,7 @@ async def lifespan(app):
     )
     app.state.exporters = ExporterRegistry()
     app.state.pipeline = RecognitionPipeline(s, app.state.backends, app.state.profiles)
-    app.state.readiness_cache = {}
+    app.state.readiness_cache = None
     app.state.rate_limiter = RedisRateLimiter(s)
     yield
     await app.state.backends.close()

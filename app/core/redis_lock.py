@@ -34,20 +34,10 @@ class RedisLock:
     async def renew_until_stopped(
         self, stop: asyncio.Event, ownership_lost: asyncio.Event, interval: int
     ):
-        try:
-            while not stop.is_set():
-                try:
-                    await asyncio.wait_for(stop.wait(), timeout=interval)
-                except TimeoutError:
-                    try:
-                        extended = await self.extend()
-                    except Exception:
-                        ownership_lost.set()
-                        return
-                    if not extended:
-                        ownership_lost.set()
-                        return
-        except asyncio.CancelledError:
-            if not stop.is_set():
-                ownership_lost.set()
-            return
+        while not stop.is_set():
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=interval)
+            except TimeoutError:
+                if not await self.extend():
+                    ownership_lost.set()
+                    return

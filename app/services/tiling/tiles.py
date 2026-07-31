@@ -88,7 +88,7 @@ def _duplicate(a, b):
 
 
 def merge_pages(base, partials):
-    details = list(base.blocks)
+    details = []
     for page in partials:
         for candidate in page.blocks:
             matches = [block for block in details if _duplicate(candidate, block)]

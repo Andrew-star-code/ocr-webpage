@@ -1,9 +1,8 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated
 
 from pydantic import Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -12,7 +11,7 @@ class Settings(BaseSettings):
     app_host: str = "0.0.0.0"
     app_port: int = Field(8000, ge=1, le=65535)
     log_level: str = "INFO"
-    api_keys: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    api_keys: list[str] = Field(default_factory=lambda: ["change-me"])
     max_upload_size: int = Field(50 * 1024 * 1024, ge=1024, le=2_147_483_648)
     max_pages: int = Field(100, ge=1, le=10000)
     max_image_pixels: int = Field(50_000_000, ge=1_000_000)
@@ -79,28 +78,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def production_secrets(self):
-        placeholders = {
-            "change-me",
-            "change-this-long-random-key",
-            "replace-with-strong-random-secret",
-            "development-only-key",
-            "test-suite-key",
-            "password",
-            "secret",
-        }
-        if self.app_env == "production" and (
-            not self.api_keys or placeholders.intersection(self.api_keys)
-        ):
-            raise ValueError("Production API_KEYS must contain a non-placeholder secret")
-        if self.app_env == "production":
-            for key in self.api_keys:
-                lowered = key.lower()
-                if len(key) < 32:
-                    raise ValueError("Production API keys must be at least 32 characters")
-                if len(set(key)) == 1:
-                    raise ValueError("Production API keys must not repeat one character")
-                if any(sequence in lowered for sequence in ("123456", "abcdef", "qwerty")):
-                    raise ValueError("Production API keys must not contain obvious sequences")
+        if self.app_env == "production" and (not self.api_keys or "change-me" in self.api_keys):
+            raise ValueError("Production API_KEYS must not contain change-me")
         if self.worker_lock_renew_interval_seconds >= self.worker_lock_ttl_seconds / 2:
             raise ValueError(
                 "WORKER_LOCK_RENEW_INTERVAL_SECONDS must be less than half WORKER_LOCK_TTL_SECONDS"

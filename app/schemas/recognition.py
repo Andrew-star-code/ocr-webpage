@@ -163,12 +163,6 @@ class ProcessingMetadata(BaseModel):
     quality_score_is_heuristic: bool = True
 
 
-class PageFailure(BaseModel):
-    page_number: int = Field(ge=1)
-    code: str
-    message: str
-
-
 class DocumentRecognition(BaseModel):
     document_id: str
     pages: list[PageRecognition]
@@ -176,5 +170,4 @@ class DocumentRecognition(BaseModel):
     normalized_text: str | None = None
     metadata: ProcessingMetadata
     warnings: list[RecognitionWarning] = Field(default_factory=list)
-    page_failures: list[PageFailure] = Field(default_factory=list)
     partial: bool = False

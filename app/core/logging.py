@@ -19,7 +19,6 @@ _ALLOWED = {
     "retry_count",
     "status",
     "error_code",
-    "storage_identifier",
 }
 
 

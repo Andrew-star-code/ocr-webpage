@@ -30,7 +30,6 @@ class BackendHealth:
 @dataclass(slots=True)
 class ModelInfo:
     name: str
-    present: bool
     vision_capable: bool
     structured_output: bool
 

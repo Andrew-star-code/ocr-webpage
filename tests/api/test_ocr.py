@@ -68,7 +68,7 @@ def test_json_flags_and_api_key():
         assert denied.status_code == 401
         response = client.post(
             "/v1/ocr",
-            headers={"X-API-Key": "test-suite-key"},
+            headers={"X-API-Key": "change-me"},
             files=upload(),
             data={
                 "output_format": "json",
@@ -85,7 +85,7 @@ def test_docx_searchable_pdf_and_validation():
     with TestClient(app) as client:
         app.state.pipeline = Pipeline()
         app.state.rate_limiter = Allow()
-        headers = {"X-API-Key": "test-suite-key"}
+        headers = {"X-API-Key": "change-me"}
         assert client.post(
             "/v1/ocr", headers=headers, files=upload(), data={"output_format": "docx"}
         ).content.startswith(b"PK")
@@ -111,7 +111,7 @@ def test_docx_searchable_pdf_and_validation():
 def test_profiles_endpoint_is_loaded_registry():
     with TestClient(app) as client:
         app.state.rate_limiter = Allow()
-        response = client.get("/v1/model/profiles", headers={"X-API-Key": "test-suite-key"})
+        response = client.get("/v1/model/profiles", headers={"X-API-Key": "change-me"})
         assert response.status_code == 200
         names = {p["name"] for p in response.json()["profiles"]}
         assert "default" in names and "system_prompt" not in response.text

@@ -1,6 +1,5 @@
 import asyncio
 import base64
-import json
 import random
 
 import httpx
@@ -97,12 +96,9 @@ class LlamaCppVisionBackend:
                         )
                     else:
                         self._vision_verified = True
-                        if options.supports_json_schema:
-                            try:
-                                structured = isinstance(json.loads(text), dict)
-                            except (ValueError, TypeError):
-                                structured = False
-                            self._structured_verified = self._structured_verified or structured
+                        self._structured_verified = (
+                            self._structured_verified or options.supports_json_schema
+                        )
                         return VisionResponse(
                             text,
                             finish,
@@ -140,15 +136,10 @@ class LlamaCppVisionBackend:
             response = await self.client.get(f"{self.base_url}/v1/models")
             response.raise_for_status()
             models = [item.get("id") for item in response.json().get("data", [])]
-            present = name in models
+            present = not models or name in models
         except (httpx.HTTPError, ValueError):
             present = False
-        return ModelInfo(
-            name=name,
-            present=present,
-            vision_capable=self._vision_verified,
-            structured_output=self._structured_verified,
-        )
+        return ModelInfo(name, present and self._vision_verified, self._structured_verified)
 
     async def warmup(self):
         await self.healthcheck()

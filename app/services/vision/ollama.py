@@ -161,9 +161,7 @@ class OllamaVisionBackend:
             raise ServiceError("model_not_found", "Configured model is not installed", 503)
         response.raise_for_status()
         caps = response.json().get("capabilities", [])
-        return ModelInfo(
-            name=name, present=True, vision_capable="vision" in caps, structured_output=True
-        )
+        return ModelInfo(name, "vision" in caps, True)
 
     async def warmup(self):
         await self.get_model_info()

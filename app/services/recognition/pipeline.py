@@ -1,5 +1,4 @@
 import asyncio
-import copy
 import io
 import json
 import re
@@ -15,7 +14,6 @@ from app.core.exceptions import ServiceError
 from app.core.metrics import PAGES, VISION_REQUESTS, VISION_RETRIES
 from app.schemas.recognition import (
     DocumentRecognition,
-    PageFailure,
     PageRecognition,
     ProcessingMetadata,
     TableBlock,
@@ -30,19 +28,6 @@ from app.services.vision.base import VisionRequestOptions
 _BLANK_IMAGE = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDAT\x08\xd7c\xf8\xcf\xc0\x00\x00\x03\x01\x01\x00\xc9\xfe\x92\xef\x00\x00\x00\x00IEND\xaeB`\x82"
 ProgressCallback = Callable[[str, int, int, int], Awaitable[None]]
 CancelCallback = Callable[[], Awaitable[bool]]
-
-
-def normalize_raw_block_ids(payload: dict, page_number: int) -> dict:
-    normalized = copy.deepcopy(payload)
-    blocks = normalized.get("blocks")
-    if not isinstance(blocks, list):
-        return normalized
-    for index, block in enumerate(blocks, 1):
-        if isinstance(block, dict):
-            block["source_id"] = str(block.get("source_id") or block.get("id") or "") or None
-            block["id"] = f"page-{page_number}-raw-{index}"
-            block["reading_order"] = index
-    return normalized
 
 
 @dataclass(slots=True)
@@ -151,7 +136,7 @@ class RecognitionPipeline:
                         raise ServiceError(
                             "invalid_model_response", "Model response must be a JSON object", 502
                         )
-                    payload = normalize_raw_block_ids(payload, page_number)
+                    self._sanitize_model_ids(payload)
                     payload.update(page_number=page_number, width=width, height=height)
                     page = PageRecognition.model_validate(payload)
                 except (ServiceError, ValidationError) as invalid:
@@ -185,6 +170,17 @@ class RecognitionPipeline:
                 VISION_RETRIES.labels(last.code).inc()
                 await asyncio.sleep(min(0.5 * 2**attempt, 4))
         raise last or ServiceError("invalid_model_response", "Invalid model response", 502)
+
+    @staticmethod
+    def _sanitize_model_ids(payload):
+        blocks = payload.get("blocks") if isinstance(payload, dict) else None
+        if not isinstance(blocks, list):
+            return
+        for index, block in enumerate(blocks, 1):
+            if isinstance(block, dict):
+                block["source_id"] = str(block.get("source_id") or block.get("id") or "") or None
+                block["id"] = f"model-block-{index}"
+                block["reading_order"] = index
 
     async def _repair_json(
         self, backend, invalid, page_number, width, height, profile, schema, cancel
@@ -223,7 +219,7 @@ class RecognitionPipeline:
         repaired_count = len(re.findall(r'"type"\s*:', response.content))
         if original_count and original_count != repaired_count:
             raise ServiceError("invalid_model_response", "JSON repair changed block count", 502)
-        repaired = normalize_raw_block_ids(repaired, page_number)
+        self._sanitize_model_ids(repaired)
         repaired.update(page_number=page_number, width=width, height=height)
         try:
             return PageRecognition.model_validate(repaired)
@@ -322,71 +318,6 @@ class RecognitionPipeline:
                 changed.append(block)
         return page.model_copy(update={"blocks": changed})
 
-    async def _process_page(
-        self, source, profile, language, preprocess_mode, detect_tables, cancel
-    ):
-        await self._cancelled(cancel)
-        processed, preprocessing_info = preprocess(source.image, preprocess_mode)
-        strategy = profile.tiling_strategy
-        oversized = (
-            source.width * source.height > profile.max_image_size
-            or max(source.width, source.height) > profile.recommended_resolution
-        )
-        if strategy != "full_page" and not oversized:
-            strategy = "full_page"
-        page = PageRecognition(
-            page_number=source.number, width=source.width, height=source.height, blocks=[]
-        )
-        retries = 0
-        overview_blocks = None
-        tile_metadata = []
-        if strategy in {"full_page", "full_page_plus_tiles"}:
-            page, retries = await self._recognize(
-                processed,
-                source.number,
-                source.width,
-                source.height,
-                profile,
-                self._prompt(profile, language, detect_tables, source.number),
-                cancel,
-            )
-        if strategy == "full_page_plus_tiles":
-            overview_blocks = list(page.blocks)
-        if strategy in {"tiles", "full_page_plus_tiles"}:
-            partials = []
-            for tile in make_tiles(processed, profile.tile_size, profile.tile_overlap):
-                await self._cancelled(cancel)
-                local, count = await self._recognize(
-                    tile.image,
-                    source.number,
-                    tile.width,
-                    tile.height,
-                    profile,
-                    self._prompt(profile, language, detect_tables, source.number, "tile"),
-                    cancel,
-                )
-                partials.append(transform_page(local, tile))
-                retries += count
-                tile_metadata.append(
-                    {
-                        "page": source.number,
-                        "id": tile.id,
-                        "x": tile.x,
-                        "y": tile.y,
-                        "width": tile.width,
-                        "height": tile.height,
-                    }
-                )
-            page = merge_pages(page, partials)
-        if detect_tables and profile.supports_tables:
-            page = await self._table_crops(page, processed, profile, language, cancel)
-        return (
-            finalize_page(page, overview_blocks),
-            retries,
-            preprocessing_info,
-            tile_metadata,
-        )
-
     async def run(
         self,
         data,
@@ -414,53 +345,70 @@ class RecognitionPipeline:
             prep = []
             tiles_meta = []
             images = []
-            successful_rendered = []
-            page_failures = []
             if progress:
                 await progress("rendering", 0, len(rendered), 0)
             for source in rendered:
-                try:
-                    page, page_retries, info, page_tiles = await self._process_page(
-                        source,
+                await self._cancelled(cancel)
+                processed, info = preprocess(source.image, preprocess_mode)
+                prep.append(info)
+                images.append(source.image)
+                strategy = profile.tiling_strategy
+                oversized = (
+                    source.width * source.height > profile.max_image_size
+                    or max(source.width, source.height) > profile.recommended_resolution
+                )
+                if strategy != "full_page" and not oversized:
+                    strategy = "full_page"
+                base = PageRecognition(
+                    page_number=source.number, width=source.width, height=source.height, blocks=[]
+                )
+                page_retries = 0
+                overview_blocks = None
+                if strategy in {"full_page", "full_page_plus_tiles"}:
+                    base, page_retries = await self._recognize(
+                        processed,
+                        source.number,
+                        source.width,
+                        source.height,
                         profile,
-                        language,
-                        preprocess_mode,
-                        detect_tables,
+                        self._prompt(profile, language, detect_tables, source.number),
                         cancel,
                     )
-                except ProcessingCancelled:
-                    raise
-                except ServiceError as exc:
-                    fatal_codes = {
-                        "ollama_unavailable",
-                        "llama_cpp_unavailable",
-                        "model_not_found",
-                        "processing_timeout",
-                    }
-                    if not allow_partial or exc.code in fatal_codes:
-                        raise
-                    page_failures.append(
-                        PageFailure(page_number=source.number, code=exc.code, message=exc.message)
-                    )
-                    if progress:
-                        await progress("recognizing", source.number, len(rendered), retries)
-                    continue
-                pages.append(page)
-                images.append(source.image)
-                successful_rendered.append(source)
-                prep.append(info)
-                tiles_meta.extend(page_tiles)
+                if strategy == "full_page_plus_tiles":
+                    overview_blocks = list(base.blocks)
+                if strategy in {"tiles", "full_page_plus_tiles"}:
+                    partials = []
+                    for tile in make_tiles(processed, profile.tile_size, profile.tile_overlap):
+                        local, count = await self._recognize(
+                            tile.image,
+                            source.number,
+                            tile.width,
+                            tile.height,
+                            profile,
+                            self._prompt(profile, language, detect_tables, source.number, "tile"),
+                            cancel,
+                        )
+                        partials.append(transform_page(local, tile))
+                        page_retries += count
+                        tiles_meta.append(
+                            {
+                                "page": source.number,
+                                "id": tile.id,
+                                "x": tile.x,
+                                "y": tile.y,
+                                "width": tile.width,
+                                "height": tile.height,
+                            }
+                        )
+                    base = merge_pages(base, partials)
+                if detect_tables and profile.supports_tables:
+                    base = await self._table_crops(base, processed, profile, language, cancel)
+                base = finalize_page(base, overview_blocks)
+                pages.append(base)
                 retries += page_retries
                 PAGES.inc()
                 if progress:
                     await progress("recognizing", source.number, len(rendered), retries)
-            if not pages:
-                failure = page_failures[0] if page_failures else None
-                raise ServiceError(
-                    failure.code if failure else "vision_inference_failed",
-                    failure.message if failure else "No pages were recognized",
-                    502,
-                )
             original = "\n\n".join(
                 b.original_text
                 for p in pages
@@ -483,7 +431,6 @@ class RecognitionPipeline:
                 original_text=original,
                 normalized_text=normalized,
                 metadata=meta,
-                page_failures=page_failures,
-                partial=bool(page_failures),
+                partial=len(pages) != len(rendered),
             )
-            return RecognitionResult(document, images, successful_rendered)
+            return RecognitionResult(document, images, rendered)

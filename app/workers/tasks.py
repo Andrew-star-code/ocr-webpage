@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import threading
 import time
 
@@ -15,17 +14,14 @@ from app.core.redis_lock import RedisLock
 from app.services.exporters.base import ExportOptions
 from app.services.exporters.registry import ExporterRegistry
 from app.services.jobs.capacity import QueueCapacity
-from app.services.jobs.state_machine import JobStateConflict
 from app.services.jobs.store import JobStore
 from app.services.recognition.pipeline import ProcessingCancelled, RecognitionPipeline
-from app.services.storage.base import DocumentStorage, StoredFile
 from app.services.storage.cleanup import StorageCleanup
 from app.services.storage.local import LocalDocumentStorage
 from app.services.vision.profiles import ProfileRegistry
 from app.services.vision.registry import create_backends
 
 s = get_settings()
-logger = logging.getLogger(__name__)
 
 
 def _heartbeat():
@@ -75,111 +71,6 @@ dramatiq.set_broker(broker)
 @dramatiq.actor(max_retries=0, time_limit=s.document_processing_timeout * 1000)
 def recognize_job(job_id):
     asyncio.run(run(job_id))
-
-
-async def _delete_result_artifacts(storage: DocumentStorage, job_id: str, identifier: str) -> None:
-    for operation, callback in (
-        ("delete_result", lambda: storage.delete_file(identifier)),
-        ("delete_reference", lambda: storage.delete_reference(job_id, identifier)),
-    ):
-        try:
-            await callback()
-        except Exception:
-            logger.exception(
-                "result_artifact_cleanup_failed",
-                extra={
-                    "job_id": job_id,
-                    "storage_identifier": identifier,
-                    "error_code": operation,
-                },
-            )
-
-
-async def _publish_result(
-    storage: DocumentStorage,
-    store: JobStore,
-    job_id: str,
-    stored: StoredFile,
-    target_status: str,
-    page_count: int,
-) -> dict:
-    try:
-        current = await store.get(job_id)
-    except Exception:
-        await _delete_result_artifacts(storage, job_id, stored.identifier)
-        raise
-    if not current or current["status"] == "cancelled":
-        await _delete_result_artifacts(storage, job_id, stored.identifier)
-        raise ProcessingCancelled()
-    if current["status"] in {"failed", "completed", "completed_with_warnings"}:
-        await _delete_result_artifacts(storage, job_id, stored.identifier)
-        raise JobStateConflict(f"Cannot publish result for terminal job {current['status']}")
-    try:
-        await storage.tag_job_file(job_id, stored)
-        completed = await store.complete(
-            job_id,
-            target_status,
-            result_file=stored.identifier,
-            current_page=page_count,
-            total_pages=page_count,
-            progress=100,
-        )
-    except Exception:
-        await _delete_result_artifacts(storage, job_id, stored.identifier)
-        raise
-    if not completed or completed["status"] not in {
-        "completed",
-        "completed_with_warnings",
-    }:
-        await _delete_result_artifacts(storage, job_id, stored.identifier)
-        if not completed or completed["status"] == "cancelled":
-            raise ProcessingCancelled()
-        raise JobStateConflict(f"Result publication lost to {completed['status']}")
-    return completed
-
-
-async def _safe_worker_cleanup(
-    *,
-    storage,
-    store,
-    capacity,
-    lock,
-    stop_renewal,
-    renewal,
-    backends,
-    redis,
-    job_id,
-    created_results,
-):
-    async def attempt(code, callback):
-        try:
-            await callback()
-        except Exception:
-            logger.exception(
-                "worker_cleanup_failed",
-                extra={"job_id": job_id, "error_code": code},
-            )
-
-    for identifier in created_results:
-        await attempt(
-            "delete_result",
-            lambda identifier=identifier: _delete_result_artifacts(storage, job_id, identifier),
-        )
-    job = None
-    try:
-        job = await store.get(job_id)
-    except Exception:
-        logger.exception(
-            "worker_cleanup_failed", extra={"job_id": job_id, "error_code": "read_job"}
-        )
-    if job and job.get("input_file"):
-        await attempt("delete_input", lambda: storage.delete_file(job["input_file"]))
-    await attempt("release_capacity", lambda: capacity.release(job_id))
-    stop_renewal.set()
-    await attempt("wait_renewal", lambda: renewal)
-    await attempt("release_lock", lock.release)
-    await attempt("close_backends", backends.close)
-    await attempt("close_redis", redis.aclose)
 
 
 async def run(job_id):
@@ -266,12 +157,20 @@ async def run(job_id):
         stored = await storage.save_result(job_id, body, exporter.mime_type, exporter.extension)
         created_results.append(stored.identifier)
         await ensure_active()
+        await storage.tag_job_file(job_id, stored)
         target = (
             "completed_with_warnings"
             if result.document.partial or result.document.warnings
             else "completed"
         )
-        await _publish_result(storage, store, job_id, stored, target, len(result.document.pages))
+        await store.complete(
+            job_id,
+            target,
+            result_file=stored.identifier,
+            current_page=len(result.document.pages),
+            total_pages=len(result.document.pages),
+            progress=100,
+        )
         created_results.clear()
     except ProcessingCancelled:
         await store.cancel(job_id)
@@ -280,15 +179,15 @@ async def run(job_id):
     except Exception:
         await store.fail(job_id, {"code": "internal_error", "message": "Internal processing error"})
     finally:
-        await _safe_worker_cleanup(
-            storage=storage,
-            store=store,
-            capacity=capacity,
-            lock=lock,
-            stop_renewal=stop_renewal,
-            renewal=renewal,
-            backends=backends,
-            redis=redis,
-            job_id=job_id,
-            created_results=created_results,
-        )
+        for identifier in created_results:
+            await storage.delete_file(identifier)
+            await storage.delete_reference(job_id, identifier)
+        job = await store.get(job_id)
+        if job and job.get("input_file"):
+            await storage.delete_file(job["input_file"])
+        await capacity.release(job_id)
+        stop_renewal.set()
+        await renewal
+        await lock.release()
+        await backends.close()
+        await redis.aclose()

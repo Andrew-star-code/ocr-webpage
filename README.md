@@ -24,7 +24,7 @@ Runtime Ollama находится только в `internal: true` сети. Д�
 
 ```bash
 cp .env.example .env
-# обязательно замените API_KEYS; production не запустится с placeholder-ключом
+# обязательно замените API_KEYS; production не запустится с change-me
 docker compose --profile model-init run --rm model-init
 ```
 
@@ -103,14 +103,3 @@ processing and stops new inference if ownership is lost. Queue reconciliation re
 terminal, and stale unlocked reservations while preserving live locked work. Failed and cancelled
 job metadata is retained exclusively by `JOB_METADATA_TTL_SECONDS`; file cleanup never deletes
 terminal metadata merely because its input or result file is absent.
-
-## Final hardening notes
-
-Partial results are intentionally not exposed by the API: any page failure fails the document, so
-clients never receive an apparently complete file with silently missing pages. Production rejects
-known placeholder API keys and requires an operator-provided secret. Queue reconciliation is one
-atomic Redis Lua operation, worker lock renewal is fail-closed, and cancellation that wins after a
-result write removes both the result and its reference before returning `cancelled`.
-
-Protect `main` with the required GitHub Actions checks named `python`, `compose`, and
-`docker-build`; administrators should not bypass these checks.
